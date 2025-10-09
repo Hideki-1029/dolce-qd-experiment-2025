@@ -11,9 +11,12 @@ For each CSV under `csv_files/`, this script:
 
 Output:
 - Saves a combined figure to `plots/centroid_ave/all_centroid_ave.png`
-- Legend labels show the last 4 digits from the filename stem (e.g., 1531, 0014)
+- Legend labels show defocus relative to a focus position specified by `--focus`
+  (interpreting the last 4 digits of the filename as micrometers; e.g., 1200 -> 12.00 mm).
 
 Optionally, use `--show` to display the figure interactively after saving.
+You can also pass one or more 4-digit codes (e.g., 1400 1600) to restrict which
+CSV files are plotted.
 """
 
 from __future__ import annotations
@@ -38,11 +41,16 @@ def find_csv_files(input_dir: Path) -> List[Path]:
     return sorted([p for p in input_dir.glob("*.csv") if p.is_file()])
 
 
-def extract_last4_digits_label(stem: str) -> str:
+def extract_last4_digits(stem: str) -> int | None:
+    """Extract last 4 digits from a filename stem, return as int or None."""
     digits = "".join(ch for ch in stem if ch.isdigit())
-    if digits:
-        return digits[-4:].rjust(4, "0")
-    return stem
+    if not digits:
+        return None
+    last4 = digits[-4:]
+    try:
+        return int(last4)
+    except ValueError:
+        return None
 
 
 def compute_centered_avg_series(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, float, Tuple[float, float]]:
@@ -109,7 +117,7 @@ def compute_x_intercept(x_values: np.ndarray, y_values: np.ndarray) -> float:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Overlay averaged centered centroid-shift for all CSVs")
+    parser = argparse.ArgumentParser(description="Overlay averaged centered centroid-shift for selected CSVs")
     parser.add_argument(
         "--input-dir",
         type=Path,
@@ -127,6 +135,17 @@ def main() -> None:
         action="store_true",
         help="Display the figure interactively after saving",
     )
+    parser.add_argument(
+        "--focus",
+        type=int,
+        default=1200,
+        help="Focus position in micrometers as 4-digit integer (e.g., 1200 -> 12.00 mm). Default: 1200",
+    )
+    parser.add_argument(
+        "codes",
+        nargs="*",
+        help="Optional 4-digit codes to include (e.g., 1400 1600). If omitted, plot all.",
+    )
 
     args = parser.parse_args()
 
@@ -137,7 +156,16 @@ def main() -> None:
 
     centroid_ave_dir = args.output_dir / "centroid_ave"
     centroid_ave_dir.mkdir(parents=True, exist_ok=True)
-    out_path = centroid_ave_dir / "all_centroid_ave.png"
+    # Normalize requested codes to 4-digit strings
+    codes_set = None
+    if args.codes:
+        codes_set = set(str(c)[-4:].zfill(4) for c in args.codes if str(c).isdigit())
+
+    if codes_set:
+        suffix = "-".join(sorted(codes_set))
+        out_path = centroid_ave_dir / f"all_centroid_ave_{suffix}.png"
+    else:
+        out_path = centroid_ave_dir / "all_centroid_ave.png"
 
     fig, ax = plt.subplots(figsize=(12.0, 8.0), constrained_layout=True)
 
@@ -155,7 +183,17 @@ def main() -> None:
             continue
 
         stem = csv_path.stem
-        label = extract_last4_digits_label(stem)
+        last4 = extract_last4_digits(stem)
+        if codes_set:
+            last4_str = str(last4).rjust(4, "0") if last4 is not None else None
+            if last4_str not in codes_set:
+                continue
+        if last4 is None:
+            label = stem
+        else:
+            # Convert micrometers to mm with sign relative to --focus
+            defocus_mm = (last4 - int(args.focus)) / 100.0
+            label = f"def={defocus_mm:+.2f}mm"
         x0 = compute_x_intercept(x_centered, shift)
         x_shifted = x_centered - x0
         ax.plot(x_shifted, shift, marker="o", markersize=3.0, linewidth=1.2, label=label)
@@ -166,7 +204,7 @@ def main() -> None:
     ax.set_title("Centroid shift (avg per y; centered at median ± 300; x-shifted to cross y=0 at x=0)")
     ax.grid(True, linestyle=":", alpha=0.6)
     if plotted_any:
-        ax.legend(title="ID(last4)", ncol=4, fontsize=9)
+        ax.legend(title="defocus (mm)", ncol=4, fontsize=9)
     else:
         print("No valid series to plot.")
 
