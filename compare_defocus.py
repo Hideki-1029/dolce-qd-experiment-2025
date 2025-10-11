@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -32,6 +33,7 @@ from plot_all_centroid_ave import compute_centered_avg_series, compute_x_interce
 
 
 REFERENCE_CSV_DEFAULT = Path("reference_csv") / "voltage_raito_-185dBm_test.csv"
+FLATSPOT_CSV_DEFAULT = Path("reference_csv") / "voltage_ratio_flat_spot.csv"
 
 
 def find_csv_files(input_dir: Path) -> List[Path]:
@@ -101,9 +103,60 @@ def load_reference_series(reference_csv: Path, defocus_mm: float) -> Tuple[np.nd
     return x_um, y
 
 
+def autodetect_flatspot_excel(reference_dir: Path) -> Optional[Path]:
+    # Excel support removed by request
+    return None
+
+
+def load_flatspot_series_from_csv(csv_path: Path, defocus_mm: float) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Load flat-spot series where the first column is voltage ratio (y),
+    and the defocus-specific columns contain the true position in mm (x).
+
+    Expected header examples:
+      - 'voltage_ratio[-]' (first column)
+      - 'true_position(de=f4 mm)', 'true_position(de=f8 mm)', ... (x in mm)
+
+    Some rows may contain strings like 'non'; they are ignored via NaN masking.
+    """
+    target_int = int(round(abs(float(defocus_mm))))
+    if target_int == 0:
+        return None
+
+    if not csv_path.exists():
+        return None
+
+    df = pd.read_csv(csv_path)
+
+    # y (voltage ratio) column: prefer header containing 'voltage', else fall back to the first column
+    y_col = next((c for c in df.columns if "voltage" in str(c).lower()), df.columns[0])
+
+    # x (position in mm) column for the target defocus, chosen via regex
+    available_columns = list(df.columns[1:])
+    chosen_x_col = None
+    pattern = re.compile(rf"f\s*{abs(target_int)}(\s|mm|\)|$)", re.IGNORECASE)
+    for col in available_columns:
+        text = str(col)
+        if pattern.search(text):
+            chosen_x_col = col
+            break
+    if chosen_x_col is None:
+        print(f"Info: No flat-spot column found for def~{target_int} mm in {csv_path.name}")
+        return None
+
+    y_series = pd.to_numeric(df[y_col], errors="coerce").to_numpy(dtype=float)
+    x_mm = pd.to_numeric(df[chosen_x_col], errors="coerce").to_numpy(dtype=float)
+    mask = np.isfinite(x_mm) & np.isfinite(y_series)
+    x_mm = x_mm[mask]
+    y = y_series[mask]
+    if x_mm.size == 0:
+        return None
+    return x_mm, y
+
+
 def plot_comparison(
     measured_csv: Path,
     reference_csv: Path,
+    flatspot_csv: Optional[Path],
     focus_um4: int,
     defocus_mm: float,
     output_path: Path,
@@ -118,15 +171,38 @@ def plot_comparison(
     # Reference series
     x_ref_um, y_ref = load_reference_series(reference_csv, defocus_mm)
     x0_ref = compute_x_intercept(x_ref_um, y_ref)
-    x_ref = x_ref_um - x0_ref
+    x_ref_um_shifted = x_ref_um - x0_ref
+
+    # Optional: Flat-spot reference from Excel (only for non-zero defocus)
+    x_flat_mm_shifted: Optional[np.ndarray] = None
+    y_flat: Optional[np.ndarray] = None
+    if abs(defocus_mm) > 1e-6:
+        flat: Optional[Tuple[np.ndarray, np.ndarray]] = None
+        if flatspot_csv is not None:
+            flat = load_flatspot_series_from_csv(flatspot_csv, defocus_mm)
+        if flat is not None:
+            x_flat_mm, y_flat_arr = flat
+            # Shift to x where series crosses 0 for consistent alignment
+            try:
+                x0_flat = compute_x_intercept(x_flat_mm, y_flat_arr)
+            except Exception:
+                x0_flat = 0.0
+            x_flat_mm_shifted = x_flat_mm - x0_flat
+            y_flat = y_flat_arr
+        else:
+            if flatspot_csv is not None:
+                print(f"Info: flat-spot data not found in {flatspot_csv.name} for def~{defocus_mm:.2f} mm.")
 
     # Plot
     fig, ax = plt.subplots(figsize=(9.5, 6.2), constrained_layout=True)
-    ax.plot(x_ref, y_ref, color="tab:blue", linewidth=2.2, label=f"reference (def={defocus_mm:+.2f}mm)")
-    ax.plot(x_meas, y_meas, color="tab:orange", linewidth=1.8, marker="o", markersize=3.0, label=f"measured (def={defocus_mm:+.2f}mm)")
+    # Convert x-axes to mm for display
+    ax.plot(x_ref_um_shifted / 1000.0, y_ref, color="tab:blue", linewidth=2.2, label=f"reference (def={defocus_mm:+.2f}mm)")
+    if x_flat_mm_shifted is not None and y_flat is not None:
+        ax.plot(x_flat_mm_shifted, y_flat, color="tab:green", linewidth=1.8, label=f"reference_flatspot (def={defocus_mm:+.2f}mm)")
+    ax.plot(x_meas / 1000.0, y_meas, color="tab:orange", linewidth=1.8, marker="o", markersize=3.0, label=f"measured (def={defocus_mm:+.2f}mm)")
     ax.axvline(0.0, color="black", linewidth=0.8, alpha=0.6)
     ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
-    ax.set_xlabel("y_axis - center [µm] (x-shifted so y=0 at x=0)")
+    ax.set_xlabel("y_axis - center [mm] (x-shifted so y=0 at x=0)")
     ax.set_ylabel("normalized horizontal centroid shift")
     ax.set_title("Measured vs Reference (averaged & centered)")
     ax.grid(True, linestyle=":", alpha=0.6)
@@ -147,18 +223,27 @@ def main() -> None:
         "--defocus-mm",
         type=float,
         nargs="+",
-        default=[0.0],
-        help="One or more defocus values in mm (e.g., 0 2 4)",
+        default=[0, 2, 4, 6, 8, 10],
+        help="One or more defocus values in mm (default: 0 2 4 6 8 10)",
     )
     parser.add_argument("--focus", type=int, default=1200, help="Focus position as 4-digit int (e.g., 1200 -> 12.00 mm)")
     parser.add_argument("--input-dir", type=Path, default=DEFAULT_INPUT_DIR, help="Measured CSV directory (default: csv_files)")
     parser.add_argument("--reference-csv", type=Path, default=REFERENCE_CSV_DEFAULT, help="Reference CSV path")
+    parser.add_argument("--flatspot-csv", type=Path, default=None, help="Flat-spot CSV path (auto-detected if omitted)")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Base output directory (default: plots)")
     parser.add_argument("--show", action="store_true", help="Display the figure after saving")
 
     args = parser.parse_args()
 
     out_dir = args.output_dir / "compare"
+
+    # Determine flat-spot Excel path if not provided
+    flatspot_csv_path: Optional[Path] = args.flatspot_csv
+    if flatspot_csv_path is None:
+        candidate = FLATSPOT_CSV_DEFAULT
+        if candidate.exists():
+            flatspot_csv_path = candidate
+            print(f"Using flat-spot CSV: {flatspot_csv_path}")
 
     any_plotted = False
     for def_mm in args.defocus_mm:
@@ -176,6 +261,7 @@ def main() -> None:
         plot_comparison(
             measured_csv=measured_csv,
             reference_csv=args.reference_csv,
+            flatspot_csv=flatspot_csv_path,
             focus_um4=int(args.focus),
             defocus_mm=float(def_mm),
             output_path=out_path,
