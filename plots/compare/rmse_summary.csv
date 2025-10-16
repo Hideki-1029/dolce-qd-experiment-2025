@@ -1,0 +1,7 @@
+defocus_mm,reference_key,focal_mm,beam_diameter_mm,ds_mm,P0_mm,rmse_meas_vs_ref,rmse_meas_vs_flat,n_ref,n_flat,output_png
+0.00,227_v2,75.000,2.270,0.000000,0.000000,nan,nan,0,0,plots\compare\def_+0.00mm.png
+2.00,227_v2,75.000,2.270,0.060533,0.023771,0.009809,0.158024,5,5,plots\compare\def_+2.00mm.png
+4.00,227_v2,75.000,2.270,0.121067,0.047543,0.044537,0.027445,9,9,plots\compare\def_+4.00mm.png
+6.00,227_v2,75.000,2.270,0.181600,0.071314,0.042604,0.026408,15,15,plots\compare\def_+6.00mm.png
+8.00,227_v2,75.000,2.270,0.242133,0.095086,0.020062,0.030108,19,19,plots\compare\def_+8.00mm.png
+10.00,227_v2,75.000,2.270,0.302667,0.118857,0.008366,0.034830,24,24,plots\compare\def_+10.00mm.png
