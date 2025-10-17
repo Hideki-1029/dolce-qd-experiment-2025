@@ -27,6 +27,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import csv
 import math
 
@@ -376,9 +377,8 @@ def plot_comparison(
         ax.plot(x_meas / 1000.0, y_meas, color="tab:orange", linewidth=1.8, marker="o", markersize=3.0, label=f"measured (def={defocus_mm:+.2f}mm)")
     ax.axvline(0.0, color="black", linewidth=0.8, alpha=0.6)
     ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
-    ax.set_xlabel("y_axis - center [mm] (x-shifted so y=0 at x=0)")
-    ax.set_ylabel("normalized horizontal centroid shift")
-    ax.set_title("Measured vs Reference (averaged & centered)")
+    ax.set_xlabel("True spot position[mm]")
+    ax.set_ylabel("Voltage ratio[-]")
     ax.grid(True, linestyle=":", alpha=0.6)
     ax.legend()
     if report_metrics and len(metrics_text_lines) > 0:
@@ -502,6 +502,36 @@ def main() -> None:
         default=2.27,
         help="Diameter of collimated beam before lens in mm (default: 2.27)",
     )
+    parser.add_argument(
+        "--make-grid",
+        action="store_true",
+        default=True,
+        help="Create a multi-panel figure of all defocus values (default: on)",
+    )
+    parser.add_argument(
+        "--no-grid",
+        dest="make_grid",
+        action="store_false",
+        help="Disable creation of the multi-panel figure",
+    )
+    parser.add_argument(
+        "--grid-rows",
+        type=int,
+        default=3,
+        help="Grid rows for multi-panel figure (default: 3)",
+    )
+    parser.add_argument(
+        "--grid-cols",
+        type=int,
+        default=2,
+        help="Grid cols for multi-panel figure (default: 2)",
+    )
+    parser.add_argument(
+        "--grid-dpi",
+        type=int,
+        default=300,
+        help="DPI for multi-panel figure (default: 300)",
+    )
 
     args = parser.parse_args()
 
@@ -594,6 +624,101 @@ def main() -> None:
     csv_file_handle.close()
     if not any_plotted:
         print("No plots generated.")
+
+    # Optional: Create multi-panel figure for paper
+    if args.make_grid:
+        try:
+            rows = max(1, int(args.grid_rows))
+            cols = max(1, int(args.grid_cols))
+            num_panels = rows * cols
+            defoci = list(map(float, args.defocus_mm))[:num_panels]
+            if len(defoci) == 0:
+                print("Skip grid: no defocus values provided.")
+                return
+
+            fig, axes = plt.subplots(rows, cols, figsize=(12.0, 16.0), constrained_layout=True, sharex=True, sharey=True)
+            axes_flat = axes.ravel() if hasattr(axes, "ravel") else [axes]
+
+            for idx, def_mm in enumerate(defoci):
+                ax = axes_flat[idx]
+                measured_csv = select_measured_csv_for_defocus(args.input_dir, int(args.focus), float(def_mm))
+                if measured_csv is None:
+                    ax.text(0.5, 0.5, f"No measured\n(def={def_mm:+.2f}mm)", transform=ax.transAxes, ha="center", va="center")
+                    ax.grid(True, linestyle=":", alpha=0.6)
+                    continue
+
+                # Measured
+                df_meas = read_qd_csv(measured_csv)
+                x_meas_centered, y_meas_calc, center_y, _ = compute_centered_avg_series(df_meas)
+                x0_meas = compute_x_intercept(x_meas_centered, y_meas_calc)
+                x_meas = (x_meas_centered - x0_meas) / 1000.0
+                y_meas = y_meas_calc
+
+                # Reference
+                x_ref_um, y_ref = load_reference_series(args.reference_csv, float(def_mm))
+                x0_ref = compute_x_intercept(x_ref_um, y_ref)
+                x_ref = (x_ref_um - x0_ref) / 1000.0
+
+                # Flat-spot (optional)
+                x_flat = None
+                y_flat = None
+                if plot_flatspot and abs(float(def_mm)) > 1e-6 and flatspot_csv_path is not None:
+                    flat = load_flatspot_series_from_csv(flatspot_csv_path, float(def_mm))
+                    if flat is not None:
+                        x_flat_mm, y_flat_arr = flat
+                        try:
+                            x0_flat = compute_x_intercept(x_flat_mm, y_flat_arr)
+                        except Exception:
+                            x0_flat = 0.0
+                        x_flat = x_flat_mm - x0_flat
+                        y_flat = y_flat_arr
+
+                # Draw
+                ax.plot(x_ref, y_ref, color="tab:blue", linewidth=2.0, label="reference")
+                if x_flat is not None and y_flat is not None:
+                    ax.plot(x_flat, y_flat, color="tab:green", linewidth=1.6, label="flatspot")
+                ax.plot(x_meas, y_meas, color="tab:orange", linewidth=1.6, marker="o", markersize=2.5, label="measured")
+                ax.axvline(0.0, color="black", linewidth=0.6, alpha=0.6)
+                ax.axhline(0.0, color="black", linewidth=0.6, alpha=0.6)
+                # small panel label
+                ax.text(0.02, 0.95, f"def={float(def_mm):+.2f}mm", transform=ax.transAxes, ha="left", va="top", fontsize=9,
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7))
+                ax.grid(True, linestyle=":", alpha=0.6)
+
+            # Axis labels for the whole figure
+            fig.supxlabel("True spot position[mm]")
+            fig.supylabel("Voltage ratio[-]")
+
+            # Build a consistent 3-item legend (reference, flatspot, measured) and place it above axes
+            legend_handles = [
+                Line2D([0], [0], color="tab:blue", linewidth=2.0, label="reference"),
+                Line2D([0], [0], color="tab:orange", linewidth=1.6, marker="o", markersize=4, label="measured"),
+            ]
+            if plot_flatspot:
+                legend_handles.insert(1, Line2D([0], [0], color="tab:green", linewidth=1.6, label="flatspot"))
+            legend = fig.legend(
+                legend_handles,
+                [h.get_label() for h in legend_handles],
+                loc="upper center",
+                bbox_to_anchor=(0.5, 1.02),
+                ncol=3 if plot_flatspot else 2,
+                frameon=True,
+                borderaxespad=0.3,
+                fontsize=10,
+                handlelength=3.0,
+            )
+            legend.get_frame().set_alpha(0.9)
+            legend.get_frame().set_facecolor("white")
+
+            grid_out = args.output_dir / "compare" / f"defocus_grid_{rows}x{cols}.png"
+            fig.savefig(grid_out, dpi=int(args.grid_dpi), bbox_inches="tight", pad_inches=0.2)
+            print(f"Saved grid: {grid_out.resolve()}")
+            if args.show:
+                plt.show()
+            else:
+                plt.close(fig)
+        except Exception as exc:
+            print(f"Grid generation failed: {exc}")
 
 
 if __name__ == "__main__":
