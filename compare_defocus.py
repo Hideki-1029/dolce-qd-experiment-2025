@@ -39,9 +39,10 @@ from plot_all_centroid_ave import compute_centered_avg_series, compute_x_interce
 REFERENCE_CSV_OPTIONS = {
     "185dBm_test": Path("reference_csv") / "voltage_raito_-185dBm_test.csv",
     "227_v2": Path("reference_csv") / "voltage_raito_227_v2.csv",
+    "gauss": Path("reference_csv") / "voltage_ratio_gauss.csv",
 }
 # Change this key to switch the default reference dataset
-REFERENCE_SELECTION = "227_v2"
+REFERENCE_SELECTION = "gauss"
 REFERENCE_CSV_DEFAULT = REFERENCE_CSV_OPTIONS[REFERENCE_SELECTION]
 FLATSPOT_CSV_DEFAULT = Path("reference_csv") / "voltage_ratio_flat_spot.csv"
 
