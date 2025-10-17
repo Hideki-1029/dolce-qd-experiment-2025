@@ -25,3 +25,8 @@ python compare_defocus.py --defocus-mm 0 2 4 6 8 10 \
   --report-metrics --metrics-window-mm 0.02 \
   --focal-mm 75 --beam-diameter-mm 2.27 \
   --metrics-csv plots/compare/metrics.csv
+
+焦点位置発見用スクリプト
+python plot_centroid_ave_paper.py --show
+# 特定IDのみ
+python plot_centroid_ave_paper.py 0900 1100 1150 1200 1250 1300 1400 1550
